@@ -1,0 +1,28 @@
+services:
+  - type: 'web'
+    name: slack-stream
+    plan: free
+    env: node
+    branch: main
+    envVars:
+      key: REDIS_URL
+      fromService:
+        type: redis
+        name: lightning
+        property: connectionString
+  - type: redis
+    name: lightning
+    ipAllowList: []
+    plan: free
+
+envVarGroups:
+  - name: slack-stream-settings
+    envVars:
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_CHANNEL_ID
+        sync: false
