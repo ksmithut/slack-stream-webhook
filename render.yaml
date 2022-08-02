@@ -5,11 +5,11 @@ services:
     env: node
     branch: main
     envVars:
-      key: REDIS_URL
-      fromService:
-        type: redis
-        name: lightning
-        property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: lightning
+          property: connectionString
   - type: redis
     name: lightning
     ipAllowList: []
