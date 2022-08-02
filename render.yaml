@@ -4,6 +4,8 @@ services:
     plan: free
     env: node
     branch: main
+    buildCommand: yarn
+    startCommand: node src/index.js
     envVars:
       - key: REDIS_URL
         fromService:
