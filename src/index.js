@@ -1,23 +1,21 @@
 import { Octokit } from '@octokit/rest'
 import { createNodeMiddleware, Webhooks } from '@octokit/webhooks'
 import { LogLevel, WebClient } from '@slack/web-api'
-import Queue from 'bull'
-import Redis from 'ioredis'
 import yaml from 'js-yaml'
 import http from 'node:http'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import config from './config.js'
+import createTypedLRUCache from './lru.js'
 import createWebhooksQueue from './webhooks-queue.js'
-
-const MESSAGE_INFO_EXPIRATION_SECONDS = 60 * 60 * 24 * 7
 
 const webhooks = new Webhooks({ secret: config.githubWebhookSecret })
 const octokit = new Octokit({ auth: config.githubToken })
-const queue = new Queue('slack-stream', config.redisURL)
-const webhookQueue = createWebhooksQueue(queue, webhooks)
+const webhookQueue = createWebhooksQueue(webhooks)
 const slack = new WebClient(config.slackBotToken, { logLevel: LogLevel.ERROR })
-const redis = new Redis(config.redisURL)
+
+const messageInfoSchema = z.object({ channel: z.string(), ts: z.string() })
+const cache = createTypedLRUCache(messageInfoSchema)
 
 webhookQueue.on('workflow_job.queued', async event => {
   const { workflow_job: job, repository, sender } = event.payload
@@ -97,8 +95,6 @@ webhookQueue.on('workflow_run.completed', async event => {
   })
 })
 
-const messageInfoSchema = z.object({ channel: z.string(), ts: z.string() })
-
 /** @typedef {import('@octokit/webhooks-types/schema').WorkflowJob} WorkflowJob */
 /** @typedef {import('@octokit/webhooks-types/schema').WorkflowRun} WorkflowRun */
 /** @typedef {import('@octokit/webhooks-types/schema').Repository} Repository */
@@ -110,17 +106,7 @@ const messageInfoSchema = z.object({ channel: z.string(), ts: z.string() })
  * @param {number} runAttempt
  */
 async function getMessageInfo (runId, runAttempt) {
-  const raw = await redis.getex(
-    `${runId}:${runAttempt}`,
-    'EX',
-    MESSAGE_INFO_EXPIRATION_SECONDS
-  )
-  if (!raw) return null
-  try {
-    return messageInfoSchema.parse(JSON.parse(raw))
-  } catch (err) {
-    return null
-  }
+  return cache.get(`${runId}:${runAttempt}`) ?? null
 }
 
 /**
@@ -129,11 +115,10 @@ async function getMessageInfo (runId, runAttempt) {
  * @param {MessageInfo} messageInfo
  */
 async function setMessageInfo (runId, runAttempt, messageInfo) {
-  await redis.setex(
-    `${runId}:${runAttempt}`,
-    MESSAGE_INFO_EXPIRATION_SECONDS,
-    JSON.stringify({ channel: messageInfo.channel, ts: messageInfo.ts })
-  )
+  cache.set(`${runId}:${runAttempt}`, {
+    channel: messageInfo.channel,
+    ts: messageInfo.ts
+  })
 }
 
 /**
@@ -207,28 +192,24 @@ async function updateMessageFromWorkflowJob (messageInfo, job) {
  * @param {Repository} repo
  * @param {User} sender
  */
- export function getInfoBlock (run, repo, sender) {
+export function getInfoBlock (run, repo, sender) {
   const info = [
     { label: 'Repo', url: repo.html_url, value: repo.full_name },
-    {
-      label: 'Workflow',
-      url: run.html_url,
-      value: run.name
-    },
-    { label: 'Author', url: sender.html_url, value: sender.login },
     ...run.pull_requests.map(pullRequest => ({
       label: 'PR',
-      url: pullRequest.url,
+      url: `${repo.html_url}/pull/${encodeURIComponent(pullRequest.number)}`,
       value: `#${pullRequest.number}`
-    }))
+    })),
+    { label: 'Workflow', url: run.html_url, value: run.name }
   ]
   if (run.run_attempt > 1) {
     info.push({
       label: 'Attempt',
-      url: `${run.html_url}/attempts/${run.run_attempt}`,
+      url: `${run.html_url}/attempts/${encodeURIComponent(run.run_attempt)}`,
       value: `#${run.run_attempt}`
     })
   }
+  info.push({ label: 'Author', url: sender.html_url, value: sender.login })
   return {
     block_id: 'info',
     type: 'section',
@@ -265,6 +246,9 @@ export function upsertJob (blocks, job) {
     if (element.type !== 'mrkdwn') return element
     if (!element.text.includes(`<${job.html_url}|`)) return element
     updated = true
+    if (element.text.match(/:slack-stream-(success|failure|cancelled):/)) {
+      return element
+    }
     return jobElement
   })
   if (!updated) elements.push(jobElement)
@@ -341,7 +325,7 @@ export function getRunColor (run) {
  * @param {number} count
  * @returns {T[][]}
  */
- export function chunkEvery (list, count) {
+export function chunkEvery (list, count) {
   /** @type {T[][]} */
   const chunks = []
   for (let i = 0; i < list.length; i += count) {
@@ -368,9 +352,13 @@ export function partition (list, partitionBy) {
   return [left, right]
 }
 
+const webhookMiddleware = createNodeMiddleware(webhooks, { path: '/' })
 
 const server = http
-  .createServer(createNodeMiddleware(webhooks, { path: '/' }))
+  .createServer((req, res) => {
+    if (req.method === 'POST') return webhookMiddleware(req, res)
+    res.end('ok')
+  })
   .listen(config.port)
   .on('listening', () => {
     console.log(`Webhook server listening on port ${config.port}`)
@@ -378,7 +366,7 @@ const server = http
 
 async function stop () {
   await promisify(server.close.bind(server))()
-  await queue.pause(true)
+  await webhookQueue.onEmpty()
 }
 
 let called = false

@@ -1,17 +1,10 @@
+import PQueue from 'p-queue'
+
 /**
- * @param {import('bull').Queue} queue
  * @param {import('@octokit/webhooks').Webhooks} webhooks
  */
-export default function createWebhooksQueue (queue, webhooks) {
-  /** @type {Map<string, (event: import('@octokit/webhooks').EmitterWebhookEvent) => (void | Promise<void>)>} */
-  const eventHandlerMap = new Map()
-
-  queue.process(async ({ data }) => {
-    const eventHandler = eventHandlerMap.get(data.eventName)
-    if (eventHandler) {
-      await eventHandler(data.event)
-    }
-  })
+export default function createWebhooksQueue (webhooks) {
+  const queue = new PQueue({ concurrency: 1 })
 
   const webhookQueue = Object.freeze({
     /**
@@ -21,11 +14,17 @@ export default function createWebhooksQueue (queue, webhooks) {
      */
     on (eventName, handler) {
       // @ts-ignore
-      eventHandlerMap.set(eventName, handler)
       webhooks.on(eventName, async event => {
-        await queue.add({ eventName, event }, { removeOnComplete: true })
+        await queue.add(async () => {
+          return Promise.resolve().then(() => handler(event)).catch(error => {
+            console.error({ err: error }, `Error in ${eventName} handler`)
+          })
+        })
       })
       return webhookQueue
+    },
+    async onEmpty () {
+      return queue.onEmpty()
     }
   })
   return webhookQueue

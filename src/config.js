@@ -7,8 +7,7 @@ const configSchema = z.object({
   githubWebhookSecret: z.string().trim().min(10),
   githubToken: z.string(),
   slackBotToken: z.string(),
-  slackChannelId: z.string(),
-  redisURL: z.string()
+  slackChannelId: z.string()
 })
 
 const envSchema = z
@@ -17,8 +16,7 @@ const envSchema = z
     GITHUB_WEBHOOK_SECRET: z.string(),
     GITHUB_TOKEN: z.string(),
     SLACK_BOT_TOKEN: z.string(),
-    SLACK_CHANNEL_ID: z.string(),
-    REDIS_URL: z.string()
+    SLACK_CHANNEL_ID: z.string()
   })
   .transform(env =>
     configSchema.parse({
@@ -26,8 +24,7 @@ const envSchema = z
       githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET,
       githubToken: env.GITHUB_TOKEN,
       slackBotToken: env.SLACK_BOT_TOKEN,
-      slackChannelId: env.SLACK_CHANNEL_ID,
-      redisURL: env.REDIS_URL
+      slackChannelId: env.SLACK_CHANNEL_ID
     })
   )
 
